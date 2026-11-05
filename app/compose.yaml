@@ -1,0 +1,52 @@
+# Docker Compose for the Talk to Figma MCP.
+#
+# Run everything from app/:
+#   docker compose up -d             # WebSocket relay only — the Figma plugin connects to it
+#   docker compose run --rm -i mcp   # MCP server over stdio (how an MCP client launches it)
+#   docker compose --profile mcp up  # relay + a long-lived stdio server (rarely useful)
+#
+# Pipeline:  Figma plugin --ws--> relay <--ws-- MCP server --stdio--> Claude Code / Cursor
+name: figma-mcp
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: figma-mcp:local
+
+services:
+  # WebSocket relay (src/socket.ts). Long-running, holds the port the Figma plugin dials.
+  relay:
+    <<: *app
+    command: ["bun", "src/socket.ts"]
+    ports:
+      - "${RELAY_PORT:-3055}:3055"
+    restart: unless-stopped
+    healthcheck:
+      # A plain GET returns "WebSocket server running"; WebSocket upgrades are skipped.
+      test:
+        - CMD
+        - bun
+        - -e
+        - "const r = await fetch('http://127.0.0.1:3055/'); process.exit(r.ok ? 0 : 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # MCP server over stdio (src/talk_to_figma_mcp/server.ts). Not a daemon: an MCP client
+  # spawns it, speaks JSON-RPC on stdin/stdout, and kills it on exit.
+  mcp:
+    <<: *app
+    command: ["bun", "src/talk_to_figma_mcp/server.ts"]
+    stdin_open: true
+    # Keep it off `docker compose up`: a stdio server with no client on stdin just idles.
+    profiles: ["mcp"]
+    # The server hardcodes ws:// for a host named exactly "localhost" and switches to
+    # wss:// (dropping the port) for any other --server value, so a compose service
+    # hostname won't work. Sharing the relay's network namespace gives it a real
+    # localhost:3055 instead.
+    network_mode: "service:relay"
+    depends_on:
+      relay:
+        condition: service_healthy

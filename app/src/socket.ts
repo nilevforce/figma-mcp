@@ -2,6 +2,36 @@
 
 import { Server, ServerWebSocket } from "bun";
 
+// Loopback by default: the relay has no authentication of its own, and both of its clients
+// (the Figma plugin and the MCP server) normally run on this machine. Set RELAY_HOST=0.0.0.0
+// only when Docker has to forward to it from outside, and keep the *published* port bound to
+// 127.0.0.1 there - widening this value alone would expose the relay to the whole network.
+const HOST = process.env.RELAY_HOST ?? "127.0.0.1";
+const PORT = Number(process.env.RELAY_PORT ?? process.env.PORT ?? 3055);
+
+// Any page in your browser can open a WebSocket to this port - WebSocket handshakes are not
+// subject to CORS. Browsers always send Origin on a handshake, so rejecting foreign origins
+// blocks that drive-by path. Non-browser clients (the MCP server, `ws`) send no Origin at all,
+// and Figma runs plugin UIs in a sandboxed iframe with Origin "null" or on a figma.com host.
+function isAllowedOrigin(origin: string | null): boolean {
+  if (!origin || origin === "null") return true;
+
+  let host: string;
+  try {
+    host = new URL(origin).hostname;
+  } catch {
+    return false;
+  }
+
+  return (
+    host === "figma.com" ||
+    host.endsWith(".figma.com") ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "[::1]"
+  );
+}
+
 // Store clients by channel
 const channels = new Map<string, Set<ServerWebSocket<any>>>();
 
@@ -39,9 +69,8 @@ function handleConnection(ws: ServerWebSocket<any>) {
 }
 
 const server = Bun.serve({
-  port: 3055,
-  // uncomment this to allow connections in windows wsl
-  // hostname: "0.0.0.0",
+  port: PORT,
+  hostname: HOST,
   fetch(req: Request, server: Server) {
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
@@ -52,6 +81,12 @@ const server = Bun.serve({
           "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
       });
+    }
+
+    const origin = req.headers.get("origin");
+    if (!isAllowedOrigin(origin)) {
+      console.log(`Rejected WebSocket upgrade from origin "${origin}"`);
+      return new Response("Forbidden origin", { status: 403 });
     }
 
     // Handle WebSocket upgrade
@@ -73,6 +108,9 @@ const server = Bun.serve({
     });
   },
   websocket: {
+    // A command payload is a few KB. Exporting a node returns base64 images, so keep headroom
+    // but not unbounded memory: any client in a channel could otherwise send an endless frame.
+    maxPayloadLength: 16 * 1024 * 1024,
     open: handleConnection,
     message(ws: ServerWebSocket<any>, message: string | Buffer) {
       try {
@@ -84,7 +122,8 @@ const server = Bun.serve({
         } else if (data.message?.result) {
           console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
+        // Message bodies are not logged on purpose: they carry design content, text overrides
+        // and base64 exports, all of which would otherwise end up in `docker logs` forever.
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -168,8 +207,7 @@ const server = Bun.serve({
                 sender: "peer",
                 channel: channelName
               };
-              console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
+              console.log(`Broadcasting to peer #${broadcastCount} in channel "${channelName}"`);
               client.send(JSON.stringify(broadcastMessage));
             }
           });
@@ -208,4 +246,4 @@ const server = Bun.serve({
   }
 });
 
-console.log(`WebSocket server running on port ${server.port}`);
+console.log(`WebSocket server running on ${HOST}:${server.port}`);

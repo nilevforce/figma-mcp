@@ -13,15 +13,34 @@ x-app: &app
     context: .
     dockerfile: Dockerfile
   image: figma-mcp:local
+  # Neither service needs to write to its own filesystem: the relay only serves WebSockets
+  # and the MCP server only speaks stdio.
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    # Wildcard *inside* the container so Docker's port forward has an address to reach. This
+    # is not what limits exposure - the published port below is.
+    RELAY_HOST: 0.0.0.0
 
 services:
   # WebSocket relay (src/socket.ts). Long-running, holds the port the Figma plugin dials.
   relay:
     <<: *app
     command: ["bun", "src/socket.ts"]
+    # Bound to loopback on purpose. The relay has no authentication: whoever can reach this
+    # port can issue arbitrary commands to whatever document the Figma plugin has open, and
+    # read every response, exports included. Both of its clients run on this machine, so
+    # nothing outside it has any business connecting.
     ports:
-      - "${RELAY_PORT:-3055}:3055"
-    restart: unless-stopped
+      - "127.0.0.1:${RELAY_PORT:-3055}:3055"
+    # Not `unless-stopped`: this is a dev-time dependency, not infrastructure. It must not
+    # come back after a reboot and sit there with an open port until someone notices.
+    restart: "no"
     healthcheck:
       # A plain GET returns "WebSocket server running"; WebSocket upgrades are skipped.
       test:

@@ -4,3 +4,4 @@ node_modules/
 dist/
 !docs/agents/
 .pi
+.DS_Store

@@ -2983,12 +2983,32 @@ function connectToFigma(port: number = 3055) {
   });
 }
 
+// Wait until the WebSocket to the relay is open. The relay is started by the same
+// `docker compose run` that starts us, so the first command can arrive while the socket is
+// still connecting. Without this wait the client has to call join_channel twice.
+function waitForSocketOpen(timeoutMs: number = 15000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const check = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+      if (Date.now() - started > timeoutMs) {
+        reject(new Error('Could not reach the Figma relay. Is it running?'));
+        return;
+      }
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        connectToFigma();
+      }
+      setTimeout(check, 250);
+    };
+    check();
+  });
+}
+
 // Function to join a channel
 async function joinChannel(channelName: string): Promise<void> {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    throw new Error("Not connected to Figma");
-  }
-
   try {
     await sendCommandToFigma("join", { channel: channelName });
     currentChannel = channelName;
@@ -3000,19 +3020,19 @@ async function joinChannel(channelName: string): Promise<void> {
 }
 
 // Function to send commands to Figma
-function sendCommandToFigma(
+async function sendCommandToFigma(
   command: FigmaCommand,
   params: unknown = {},
   timeoutMs: number = 30000
 ): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    // If not connected, try to connect first
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      connectToFigma();
-      reject(new Error("Not connected to Figma. Attempting to connect..."));
-      return;
-    }
+  // Connect and wait for the socket instead of failing on the first command: a cold start
+  // (relay and server coming up together) is the normal case, not an error.
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    connectToFigma();
+    await waitForSocketOpen();
+  }
 
+  return new Promise((resolve, reject) => {
     // Check if we need a channel for this command
     const requiresChannel = command !== "join";
     if (requiresChannel && !currentChannel) {
@@ -3348,6 +3368,13 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info('FigmaMCP server running on stdio');
+
+  // Exit when the client closes the pipe. The WebSocket to the relay keeps the event loop
+  // alive on its own, so without this the process outlives its client: in a container that
+  // means `docker compose run --rm` never removes it and every crash leaks a container that
+  // stays connected to the relay.
+  process.stdin.on('end', () => process.exit(0));
+  process.stdin.on('close', () => process.exit(0));
 }
 
 // Run the server

@@ -12,7 +12,7 @@ Claude Code / Cursor ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay 
 
 ## Repository layout
 
-Project code lives in `app/`. The repo root holds only agent-development scaffolding — skills (`.agents/`), agent instructions (`AGENTS.md`, `CLAUDE.md`), MCP config (`.mcp.json`), agent docs (`docs/agents/`) and issues (`.scratch/`).
+Project code lives in `app/`. The repo root holds only agent-development scaffolding — skills (`.agents/`), agent instructions (`AGENTS.md`, `CLAUDE.md`), MCP config (`.mcp.json`), agent docs (`docs/agents/`), issues (`.scratch/`) — plus the files GitHub expects at the root (`README.md`, `LICENSE`) and the `Makefile` entry point.
 
 **All `bun` commands below run from `app/`.**
 

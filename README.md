@@ -1,38 +1,37 @@
 # Talk to Figma MCP
 
-This project implements a Model Context Protocol (MCP) integration between AI agent (Cursor, Claude Code) and Figma, allowing AI agent to communicate with Figma for reading designs and modifying them programmatically.
+This project implements a Model Context Protocol (MCP) integration between AI agents (Cursor, Claude Code, OpenCode) and Figma, allowing AI agent to communicate with Figma for reading designs and modifying them programmatically.
 
 https://github.com/user-attachments/assets/129a14d2-ed73-470f-9a4c-2240b2a4885c
 
 ## Project Structure
 
-All project code lives in `app/`. The repo root holds only agent-development scaffolding (`.agents/`, `AGENTS.md`, `CLAUDE.md`, `docs/agents/`, `.scratch/`), so **run every command below from inside `app/`**.
+All project code lives in `app/`, so container and Make commands run from the repo root and Bun commands from `app/`.
 
-- `src/talk_to_figma_mcp/` - TypeScript MCP server for Figma integration
-- `src/cursor_mcp_plugin/` - Figma plugin for communicating with Cursor
-- `src/socket.ts` - WebSocket server that facilitates communication between the MCP server and Figma plugin
+- `app/src/talk_to_figma_mcp/` - TypeScript MCP server for Figma integration
+- `app/src/cursor_mcp_plugin/` - Figma plugin for communicating with Cursor
+- `app/src/socket.ts` - WebSocket server that facilitates communication between the MCP server and Figma plugin
+- `app/compose.yaml` - Docker Compose services (`relay` and `mcp`)
 
-## How to use
+## Quick start (Docker Compose)
 
-1. Install Bun if you haven't already:
+You only need Docker - Bun is not required, everything runs in a container.
 
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-2. Run setup, this will also install MCP in your Cursor's active project
+1. Start everything from the repo root:
 
 ```bash
-bun setup
+make mcp
 ```
 
-3. Start the Websocket server
+This builds the image, starts the relay on port **3055** (the bridge between Figma and your AI agent) and runs the MCP server on stdio. You normally do not run it by hand - your AI client does, using exactly this command - but it is the same thing either way. `make stop` frees the port when you are done.
 
-```bash
-bun socket
-```
+2. Install the Figma plugin from the [Figma community page](https://www.figma.com/community/plugin/1485687494525374295/cursor-talk-to-figma-mcp-plugin) or [install it locally](#figma-plugin).
 
-4. **NEW** Install Figma plugin from [Figma community page](https://www.figma.com/community/plugin/1485687494525374295/cursor-talk-to-figma-mcp-plugin) or [install locally](#figma-plugin)
+3. Point your MCP client at the container - see [Connect your MCP client](#connect-your-mcp-client).
+
+4. In Figma, run the **Cursor Talk To Figma MCP Plugin**, connect it to port `3055`, and ask your agent to `join_channel` with the same channel name. Then describe the design change you want.
+
+If your agent reports `Not connected to Figma`, it started before the plugin joined the channel - run `join_channel` again.
 
 ## Quick Video Tutorial
 
@@ -48,37 +47,94 @@ Thanks to [@dusskapark](https://github.com/dusskapark) for contributing the bulk
 Another contribution from [@dusskapark](https://github.com/dusskapark)
 Propagate component instance overrides from a source instance to multiple target instances with a single command. This feature dramatically reduces repetitive design work when working with component instances that need similar customizations. Check out our [demo video](https://youtu.be/uvuT8LByroI).
 
-## Manual Setup and Installation
+## Connect your MCP client
 
-### MCP Server: Integration with Cursor
+All clients start the server the same way - `make mcp`, which runs the container that speaks MCP over stdio:
 
-Add the server to your Cursor MCP configuration in `~/.cursor/mcp.json`:
+```bash
+make --no-print-directory -C /path-to-repo mcp
+```
+
+Two details are load-bearing. `--no-print-directory` is not optional: without it make writes `Entering directory ...` to stdout, which is exactly the channel the protocol runs on, and the client breaks. The relay comes up on its own the first time - the server waits up to 15 seconds for it before failing a command.
+
+### Cursor
+
+Add to `~/.cursor/mcp.json`, or to `.cursor/mcp.json` in a project:
 
 ```json
 {
   "mcpServers": {
     "TalkToFigma": {
-      "command": "bunx",
-      "args": ["cursor-talk-to-figma-mcp@latest"]
+      "command": "make",
+      "args": ["--no-print-directory", "-C", "/path-to-repo", "mcp"]
     }
   }
 }
 ```
 
-### WebSocket Server
-
-Start the WebSocket server:
+### Claude Code
 
 ```bash
-bun socket
+claude mcp add TalkToFigma -- make --no-print-directory -C /path-to-repo mcp
 ```
 
-### Figma Plugin
+### OpenCode
+
+Let OpenCode write the config for you:
+
+```bash
+opencode mcp add TalkToFigma -- make --no-print-directory -C /path-to-repo mcp
+```
+
+Or add it by hand, in `opencode.json` at the project root or in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "TalkToFigma": {
+        "type": "local",
+        "command": ["make", "--no-print-directory", "-C", "/path-to-repo", "mcp"],
+        "timeout": { "execution": 60000 }
+      }
+    }
+  }
+}
+```
+
+Use OpenCode 2.x - the older `mcp.<name>` shape is ignored by it, not just deprecated, so the server silently never appears. `timeout.execution` matters too: the default is 5 seconds per request, and `get_document_info` or `scan_text_nodes` on a large file takes longer.
+
+## Figma Plugin
+
+Either install it from the [Figma community page](https://www.figma.com/community/plugin/1485687494525374295/cursor-talk-to-figma-mcp-plugin), or link the local build:
 
 1. In Figma, go to Plugins > Development > New Plugin
 2. Choose "Link existing plugin"
-3. Select the `src/cursor_mcp_plugin/manifest.json` file
+3. Select the `app/src/cursor_mcp_plugin/manifest.json` file
 4. The plugin should now be available in your Figma development plugins
+
+## Run without Docker
+
+With Bun installed, the relay and the server can run straight from `app/`:
+
+```bash
+cd app
+bun install
+bun socket     # relay on port 3055
+```
+
+Then point your MCP client at the published package instead of the container:
+
+```bash
+# Claude Code
+claude mcp add TalkToFigma -- bunx cursor-talk-to-figma-mcp@latest
+
+# OpenCode
+opencode mcp add TalkToFigma -- bunx cursor-talk-to-figma-mcp@latest
+```
+
+For Cursor, set `"command": "bunx"` and `"args": ["cursor-talk-to-figma-mcp@latest"]`. Running `bun setup` from `app/` writes exactly that config to `.cursor/mcp.json` and `.mcp.json` at the repo root.
 
 ## Windows + WSL Guide
 
@@ -88,7 +144,7 @@ bun socket
 powershell -c "irm bun.sh/install.ps1|iex"
 ```
 
-2. Uncomment the hostname `0.0.0.0` in `src/socket.ts`
+2. Uncomment the hostname `0.0.0.0` in `app/src/socket.ts`
 
 ```typescript
 // uncomment this to allow connections in windows wsl
@@ -98,20 +154,20 @@ hostname: "0.0.0.0",
 3. Start the websocket
 
 ```bash
-bun socket
+cd app && bun socket
 ```
 
 ## Usage
 
-1. Start the WebSocket server
-2. Install the MCP server in Cursor
-3. Open Figma and run the Cursor MCP Plugin
+1. Start the relay (`make mcp`, which brings it up, or `bun socket` from `app/`)
+2. Connect your MCP client to the server ([Cursor](#cursor), [Claude Code](#claude-code), [OpenCode](#opencode))
+3. Open Figma and run the Cursor Talk To Figma MCP Plugin
 4. Connect the plugin to the WebSocket server by joining a channel using `join_channel`
-5. Use Cursor to communicate with Figma using the MCP tools
+5. Use your AI agent to communicate with Figma using the MCP tools
 
 ## Local Development Setup
 
-To develop, update your mcp config to direct to your local directory.
+To run the MCP server from a local checkout instead of the container or the published package, point your client at `server.ts`:
 
 ```json
 {
@@ -123,6 +179,8 @@ To develop, update your mcp config to direct to your local directory.
   }
 }
 ```
+
+For a quick run in the foreground, `make mcp` does the same thing from the image.
 
 ## MCP Tools
 
@@ -223,7 +281,7 @@ The MCP server includes several helper prompts to guide you through complex desi
 1. Navigate to the Figma plugin directory:
 
    ```
-   cd src/cursor_mcp_plugin
+   cd app/src/cursor_mcp_plugin
    ```
 
 2. Edit code.js and ui.html
